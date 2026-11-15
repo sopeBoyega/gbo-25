@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width,initial-scale=1">
+	<meta name="robots" content="noindex,nofollow">
+	<title>Host desk / Gbo 25</title>
+	<link rel="icon" href="/favicon.svg">
+	<link rel="stylesheet" href="/style.css">
+	<script type="module" src="/admin.js"></script>
+</head>
+<body>
+	<header class="topbar"><a class="wordmark" href="/">GBO<span>®25</span></a><a class="text-link" href="/">BACK TO THE TRIBUTE ↗</a></header>
+	<main class="admin-main">
+		<p class="eyebrow">FOR THE HOST</p>
+		<h1>THE REVIEW DESK.</h1>
+		<p class="admin-help">Review every message and photo before publishing. Remove private information, spam or anything the people pictured would not want shared.</p>
+		<form id="login">
+			<label for="password">HOST PASSWORD</label>
+			<input id="password" type="password" autocomplete="current-password" required>
+			<button class="button primary">SIGN IN ↗</button>
+		</form>
+		<div id="desk" hidden>
+			<div class="admin-controls">
+				<label for="status-filter">Show entries
+					<select id="status-filter">
+						<option value="pending">Waiting for review</option>
+						<option value="approved">Published</option>
+					</select>
+				</label>
+				<button id="refresh" class="button outline">REFRESH</button>
+				<button id="logout" class="button outline">SIGN OUT</button>
+			</div>
+			<div id="admin-entries" class="entries"></div>
+			<button id="admin-more" class="button outline" hidden>LOAD MORE ↓</button>
+		</div>
+		<p id="admin-status" role="status"></p>
+	</main>
+</body>
+</html>
