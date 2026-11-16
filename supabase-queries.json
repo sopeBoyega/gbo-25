@@ -1,0 +1,21 @@
+[
+  "DELETE FROM limits WHERE expires < ?",
+  "INSERT INTO limits(key,count,expires) VALUES (?,1,?) ON CONFLICT(key) DO UPDATE SET count=count+1",
+  "SELECT count FROM limits WHERE key=?",
+  "SELECT token FROM sessions WHERE token=? AND expires>?",
+  "SELECT 1",
+  "SELECT seq,id,name,message,created_at,photo IS NOT NULL AS has_photo FROM entries WHERE status='approved' AND seq < ? ORDER BY seq DESC LIMIT 25",
+  "SELECT seq,id,name,message,created_at,photo IS NOT NULL AS has_photo FROM entries WHERE status='approved' AND seq < ? AND photo IS NOT NULL ORDER BY seq DESC LIMIT 25",
+  "SELECT count(*) AS wishes,coalesce(sum(photo IS NOT NULL),0) AS photos FROM entries WHERE status='approved'",
+  "SELECT id FROM entries WHERE request_id=?",
+  "SELECT count(*) AS n,coalesce(sum(length(photo)),0) AS bytes FROM entries",
+  "INSERT INTO entries(id,request_id,name,message,photo,created_at) VALUES (?,?,?,?,?,?)",
+  "DELETE FROM sessions WHERE expires < ?",
+  "INSERT INTO sessions(token,expires) VALUES (?,?)",
+  "DELETE FROM sessions WHERE token=?",
+  "SELECT seq,id,name,message,status,created_at,photo IS NOT NULL AS has_photo FROM entries WHERE status=? AND seq<? ORDER BY seq DESC LIMIT 25",
+  "DELETE FROM entries WHERE id=?",
+  "UPDATE entries SET status=? WHERE id=?",
+  "SELECT photo FROM entries WHERE id=?",
+  "SELECT photo FROM entries WHERE id=? AND status='approved'"
+]

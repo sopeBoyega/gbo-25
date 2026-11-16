@@ -3,3 +3,6 @@ node_modules/
 data/
 *.sqlite*
 *.log
+.openai/
+outputs/
+render-env.env

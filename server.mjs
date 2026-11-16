@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
+import { SupabaseDatabase } from './supabase-db.mjs';
 const sharp = createRequire(import.meta.url)('sharp');
 sharp.cache(false);
 sharp.concurrency(2);
@@ -17,16 +18,22 @@ const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{1
 export function createApp(options = {}) {
   const env = { ...process.env, ...options };
   const production = env.NODE_ENV === 'production';
-  const origin = env.APP_ORIGIN || 'http://localhost:3000';
+  const origin = env.APP_ORIGIN || env.RENDER_EXTERNAL_URL || 'http://localhost:3000';
   if (new URL(origin).origin !== origin) throw new Error('APP_ORIGIN must be an origin, without a trailing slash or path.');
   if ((env.ADMIN_PASSWORD || '').length < 24 || (env.RATE_SECRET || '').length < 32) throw new Error('Run npm run setup, or configure ADMIN_PASSWORD (24+ chars) and RATE_SECRET (32+ chars).');
   if ([env.ADMIN_PASSWORD,env.RATE_SECRET].some(v=>v.startsWith('replace-with-'))) throw new Error('Replace the example secrets or run npm run setup.');
   if (production && !origin.startsWith('https://')) throw new Error('Production requires an HTTPS APP_ORIGIN.');
-  const dataDir = resolve(env.DATA_DIR || join(ROOT, 'data'));
-  mkdirSync(dataDir, { recursive: true });
-  const db = new DatabaseSync(join(dataDir, 'tribute.sqlite'));
-  db.exec(readFileSync(join(ROOT, 'schema.sql'), 'utf8'));
-  db.exec('PRAGMA busy_timeout = 5000');
+  const remote = !!env.SUPABASE_URL;
+  if (production && !remote) throw new Error('Production requires SUPABASE_URL and SUPABASE_SECRET_KEY to preserve data on Render Free.');
+  let db;
+  if (remote) db = new SupabaseDatabase(env);
+  else {
+    const dataDir = resolve(env.DATA_DIR || join(ROOT, 'data'));
+    mkdirSync(dataDir, { recursive: true });
+    db = new DatabaseSync(join(dataDir, 'tribute.sqlite'));
+    db.exec(readFileSync(join(ROOT, 'schema.sql'), 'utf8'));
+    db.exec('PRAGMA busy_timeout = 5000');
+  }
   const config = JSON.parse(readFileSync(join(ROOT, 'site.config.json'), 'utf8'));
   const mac = value => createHmac('sha256', env.RATE_SECRET).update(value).digest('hex');
   let activeUploads = 0;
@@ -37,16 +44,16 @@ export function createApp(options = {}) {
     ['/favicon.svg',['favicon.svg','image/svg+xml']], ['/robots.txt',['robots.txt','text/plain; charset=utf-8']]
   ]);
   const publicRow = row => ({ id: row.id, seq: row.seq, name: row.name, message: row.message, hasPhoto: !!row.has_photo, createdAt: row.created_at, ...(row.status ? {status:row.status} : {}) });
-  function rate(key, max, duration) {
+  async function rate(key, max, duration) {
     const now = Date.now();
-    db.prepare('DELETE FROM limits WHERE expires < ?').run(now);
+    (await db.prepare('DELETE FROM limits WHERE expires < ?').run(now));
     const bucket = `${key}:${Math.floor(now / duration)}`;
-    db.prepare('INSERT INTO limits(key,count,expires) VALUES (?,1,?) ON CONFLICT(key) DO UPDATE SET count=count+1').run(bucket, now + duration);
-    if (db.prepare('SELECT count FROM limits WHERE key=?').get(bucket).count > max) fail(429,'Too many attempts. Please try again later.');
+    (await db.prepare('INSERT INTO limits(key,count,expires) VALUES (?,1,?) ON CONFLICT(key) DO UPDATE SET count=count+1').run(bucket, now + duration));
+    if ((await db.prepare('SELECT count FROM limits WHERE key=?').get(bucket)).count > max) fail(429,'Too many attempts. Please try again later.');
   }
-  function authorized(req) {
+  async function authorized(req) {
     const token = /(?:^|;\s*)gbo_session=([a-f0-9]{64})(?:;|$)/.exec(req.headers.cookie || '')?.[1];
-    return token && db.prepare('SELECT token FROM sessions WHERE token=? AND expires>?').get(hash(token), Date.now());
+    return token && (await db.prepare('SELECT token FROM sessions WHERE token=? AND expires>?').get(hash(token), Date.now()));
   }
   async function body(req, max = 6000000) {
     if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] || '')) fail(415,'Please send JSON.');
@@ -92,32 +99,32 @@ export function createApp(options = {}) {
       const visitor = mac(ip || 'unknown');
       if (req.method === 'POST') {
         if (req.headers.origin !== origin) fail(403,'Please submit from the website itself.');
-        rate(`post:${visitor}`, 40, 600000);
+        await rate(`post:${visitor}`, 40, 600000);
       }
       if (path === '/api/config' && req.method === 'GET') return send(200,config);
-      if (path === '/health' && req.method === 'GET') { db.prepare('SELECT 1').get(); return send(200,{ok:true}); }
+      if (path === '/health' && req.method === 'GET') { (await db.prepare('SELECT 1').get()); return send(200,{ok:true}); }
       if (path === '/api/challenge' && req.method === 'GET') {
-        rate(`challenge:${visitor}`, 60, 600000);
+        await rate(`challenge:${visitor}`, 60, 600000);
         const value = `${Date.now()}.${randomBytes(16).toString('hex')}`;
         return send(200,{ token:`${value}.${mac(value)}` });
       }
       if (path === '/api/entries' && req.method === 'GET') {
         const before = Math.min(Number(url.searchParams.get('before')) || Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
         const filter = url.searchParams.get('filter') === 'photos' ? ' AND photo IS NOT NULL' : '';
-        const rows = db.prepare(`SELECT seq,id,name,message,created_at,photo IS NOT NULL AS has_photo FROM entries WHERE status='approved' AND seq < ?${filter} ORDER BY seq DESC LIMIT 25`).all(before);
-        const totals = db.prepare("SELECT count(*) AS wishes,coalesce(sum(photo IS NOT NULL),0) AS photos FROM entries WHERE status='approved'").get();
+        const rows = (await db.prepare(`SELECT seq,id,name,message,created_at,photo IS NOT NULL AS has_photo FROM entries WHERE status='approved' AND seq < ?${filter} ORDER BY seq DESC LIMIT 25`).all(before));
+        const totals = (await db.prepare("SELECT count(*) AS wishes,coalesce(sum(photo IS NOT NULL),0) AS photos FROM entries WHERE status='approved'").get());
         return send(200,{entries: rows.map(publicRow),next:rows.length === 25 ? rows.at(-1).seq : null,totals});
       }
       if (path === '/api/entries' && req.method === 'POST') {
-        rate(`submit:${visitor}`, 8, 3600000);
-        rate('submit:global', 300, 86400000);
+        await rate(`submit:${visitor}`, 8, 3600000);
+        await rate('submit:global', 300, 86400000);
         if (activeUploads >= 3) fail(503,'The upload queue is busy. Try again in a moment.');
         activeUploads++;
         try {
           const input = await body(req);
           if (input.website) fail(400,'Submission could not be accepted.');
           if (!uuid.test(input.requestId || '')) fail(400,'Please refresh and try again.');
-          const prior = db.prepare('SELECT id FROM entries WHERE request_id=?').get(input.requestId);
+          const prior = (await db.prepare('SELECT id FROM entries WHERE request_id=?').get(input.requestId));
           if (prior) return send(202,{id:prior.id,status:'pending'});
           const parts = typeof input.token === 'string' ? input.token.split('.') : [];
           const age = Date.now() - Number(parts[0]);
@@ -127,41 +134,41 @@ export function createApp(options = {}) {
           if (!name || name.length > 60 || message.length < 2 || message.length > 1200) fail(400,'Add your name (up to 60 characters) and a message (2–1,200 characters).');
           if (input.consent !== true) fail(400,'Please confirm you have permission to share.');
           let photo = input.photo ? await imageData(input.photo) : null;
-          // Check capacity after decoding and immediately before the synchronous insert.
-          const capacity = db.prepare('SELECT count(*) AS n,coalesce(sum(length(photo)),0) AS bytes FROM entries').get();
-          if (capacity.n >= 3000 || capacity.bytes + (photo?.length || 0) > 512 * 1024 * 1024) fail(503,'The archive is full. Please contact the host.');
+          // The hosted database also enforces capacity inside its insert transaction.
+          const capacity = (await db.prepare('SELECT count(*) AS n,coalesce(sum(length(photo)),0) AS bytes FROM entries').get());
+          if (capacity.n >= 3000 || capacity.bytes + (photo?.length || 0) > 256 * 1024 * 1024) fail(503,'The archive is full. Please contact the host.');
           const id = randomUUID();
-          try { db.prepare('INSERT INTO entries(id,request_id,name,message,photo,created_at) VALUES (?,?,?,?,?,?)').run(id,input.requestId,name,message,photo,new Date().toISOString()); }
-          catch (e) { const retry = db.prepare('SELECT id FROM entries WHERE request_id=?').get(input.requestId); if (retry) return send(202,{id:retry.id,status:'pending'}); throw e; }
+          try { (await db.prepare('INSERT INTO entries(id,request_id,name,message,photo,created_at) VALUES (?,?,?,?,?,?)').run(id,input.requestId,name,message,photo,new Date().toISOString())); }
+          catch (e) { const retry = (await db.prepare('SELECT id FROM entries WHERE request_id=?').get(input.requestId)); if (retry) return send(202,{id:retry.id,status:'pending'}); throw e; }
           return send(202,{id,status:'pending'});
         } finally { activeUploads--; }
       }
       if (path === '/api/admin/login' && req.method === 'POST') {
-        rate(`login:${visitor}`, 5, 900000);
+        await rate(`login:${visitor}`, 5, 900000);
         const input = await body(req, 2048);
         if (typeof input.password !== 'string' || !equal(input.password,env.ADMIN_PASSWORD)) fail(401,'Incorrect password.');
-        db.prepare('DELETE FROM sessions WHERE expires < ?').run(Date.now());
+        (await db.prepare('DELETE FROM sessions WHERE expires < ?').run(Date.now()));
         const token = randomBytes(32).toString('hex');
-        db.prepare('INSERT INTO sessions(token,expires) VALUES (?,?)').run(hash(token),Date.now()+8*3600000);
+        (await db.prepare('INSERT INTO sessions(token,expires) VALUES (?,?)').run(hash(token),Date.now()+8*3600000));
         return send(200,{ok:true},undefined,{'Set-Cookie':`gbo_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800${production ? '; Secure' : ''}`});
       }
       if (path.startsWith('/api/admin/')) {
-        if (!authorized(req)) fail(401,'Please sign in.');
+        if (!(await authorized(req))) fail(401,'Please sign in.');
         if (path === '/api/admin/logout' && req.method === 'POST') {
           const token = /gbo_session=([a-f0-9]{64})/.exec(req.headers.cookie || '')?.[1];
-          if(token) db.prepare('DELETE FROM sessions WHERE token=?').run(hash(token));
+          if(token) (await db.prepare('DELETE FROM sessions WHERE token=?').run(hash(token)));
           return send(200,{ok:true},undefined,{'Set-Cookie':`gbo_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${production ? '; Secure' : ''}`});
         }
         if (path === '/api/admin/entries' && req.method === 'GET') {
           const status = url.searchParams.get('status') === 'approved' ? 'approved' : 'pending';
           const before = Number(url.searchParams.get('before')) || Number.MAX_SAFE_INTEGER;
-          const rows = db.prepare('SELECT seq,id,name,message,status,created_at,photo IS NOT NULL AS has_photo FROM entries WHERE status=? AND seq<? ORDER BY seq DESC LIMIT 25').all(status,before);
+          const rows = (await db.prepare('SELECT seq,id,name,message,status,created_at,photo IS NOT NULL AS has_photo FROM entries WHERE status=? AND seq<? ORDER BY seq DESC LIMIT 25').all(status,before));
           return send(200,{entries:rows.map(publicRow),next:rows.length===25?rows.at(-1).seq:null});
         }
         if (path === '/api/admin/moderate' && req.method === 'POST') {
           const input = await body(req,2048);
           if (!uuid.test(input.id || '') || !['approve','hide','delete'].includes(input.action)) fail(400,'Invalid action.');
-          const result = input.action === 'delete' ? db.prepare('DELETE FROM entries WHERE id=?').run(input.id) : db.prepare('UPDATE entries SET status=? WHERE id=?').run(input.action==='approve'?'approved':'pending',input.id);
+          const result = input.action === 'delete' ? (await db.prepare('DELETE FROM entries WHERE id=?').run(input.id)) : (await db.prepare('UPDATE entries SET status=? WHERE id=?').run(input.action==='approve'?'approved':'pending',input.id));
           if (!result.changes) fail(404,'Entry not found.');
           return send(200,{ok:true});
         }
@@ -169,7 +176,7 @@ export function createApp(options = {}) {
       const photoMatch = /^\/api\/(admin\/)?photos\/([a-f0-9-]+)$/.exec(path);
       if (photoMatch && req.method === 'GET') {
         if (!uuid.test(photoMatch[2])) fail(404,'Photo not found.');
-        const row = db.prepare(`SELECT photo FROM entries WHERE id=?${photoMatch[1] ? '' : " AND status='approved'"}`).get(photoMatch[2]);
+        const row = (await db.prepare(`SELECT photo FROM entries WHERE id=?${photoMatch[1] ? '' : " AND status='approved'"}`).get(photoMatch[2]));
         if (!row?.photo) fail(404,'Photo not found.');
         return send(200,Buffer.from(row.photo),'image/jpeg',{'Content-Disposition':'inline; filename="memory.jpg"'});
       }
@@ -197,6 +204,6 @@ export function createApp(options = {}) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const server = createApp();
   const port = Number(process.env.PORT || 3000);
-  server.listen(port,process.env.HOST || '127.0.0.1',()=>console.log(`Gbo 25 running at http://localhost:${port}`));
+  server.listen(port,process.env.HOST || (process.env.RENDER ? '0.0.0.0' : '127.0.0.1'),()=>console.log(`Gbo 25 running at http://localhost:${port}`));
   for (const signal of ['SIGTERM','SIGINT']) process.on(signal,()=>server.close(()=>process.exit(0)));
 }
