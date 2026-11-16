@@ -59,3 +59,84 @@ $('share').onclick=async()=>{try{await navigator.clipboard.writeText(location.or
 $('privacy-open').onclick=()=>$('privacy').showModal();document.querySelectorAll('dialog').forEach(dialog=>{dialog.querySelector('.dialog-close').onclick=()=>dialog.close();dialog.addEventListener('click',e=>{if(e.target===dialog){const r=dialog.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)dialog.close();}});});
 async function configure(){try{const c=await api('/api/config');document.title=`${c.name} / ${c.age} — The Birthday Archive`;$('hero-name').textContent=c.name.toUpperCase();$('hero-age').textContent=c.age+'.';$('closing-name').textContent=c.name.toUpperCase()+'.';$('intro').textContent=c.intro;$('portrait').src=c.portrait;$('portrait').alt=c.portraitAlt;$('birthday-date').textContent=new Date(c.birthday).toLocaleDateString('en-GB',{day:'2-digit',month:'long',year:'numeric',timeZone:c.timezone}).toUpperCase();const countdown=()=>{const remaining=new Date(c.birthday)-Date.now();const day=new Date().toLocaleDateString('en-CA',{timeZone:c.timezone});const birthdayDay=new Date(c.birthday).toLocaleDateString('en-CA',{timeZone:c.timezone});$('countdown').textContent=remaining>0?`CHAPTER ${c.age} IN ${Math.floor(remaining/3600000)}H ${Math.floor(remaining/60000)%60}M`:day===birthdayDay?'TODAY IS YOURS. HAPPY BIRTHDAY.':`CHAPTER ${c.age}. KEEP THE LOVE COMING.`;};countdown();setInterval(countdown,60000);}catch{toast('Could not load site details. Please refresh.');}}
 configure();loadEntries();challenge().catch(()=>{token='';});
+
+// A replayable birthday experience. Only the public approved-entry API is used.
+{
+  const film=$('birthday-film'), stage=$('film-stage');
+  const reducedMotion=matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let slides=[], index=0, timer=null, playing=false, cursor=null, fetching=false, generation=0;
+  const stopTimer=()=>{clearTimeout(timer);timer=null;};
+  const schedule=()=>{
+    stopTimer();
+    if(!playing||!film.open||fetching||document.hidden||index===slides.length-1)return;
+    const delay=Math.max(8000,Math.min(24000,(slides[index].message?.length||0)*55));
+    timer=setTimeout(()=>move(1),delay);
+  };
+  const controls=()=>{
+    $('film-play').textContent=index===slides.length-1?'REPLAY':playing?'PAUSE':'PLAY';
+    $('film-prev').disabled=index===0||fetching;
+    $('film-next').disabled=index===slides.length-1||fetching;
+    $('film-position').textContent=slides[index]?.kind==='memory'?`MEMORY ${index}`:index===0?'CHAPTER 25':'HERE FOR YOU';
+  };
+  function render(){
+    stage.replaceChildren();
+    const slide=slides[index];
+    stage.className=`film-stage film-${slide.kind}`;
+    const title=document.createElement('h2');title.id='film-title';title.textContent=slide.kind==='memory'?'Here for you':'Here for you';
+    if(slide.kind==='intro'||slide.hasPhoto){
+      const image=document.createElement('img');image.className='film-photo';
+      image.src=slide.kind==='intro'?$('portrait').src:`/api/photos/${slide.id}`;
+      image.alt=slide.kind==='intro'?$('portrait').alt:`Memory shared by ${slide.name}`;
+      image.onerror=()=>image.remove();stage.append(image);
+    }
+    const copy=document.createElement('div');copy.className='film-copy';
+    if(slide.kind==='memory'){
+      title.className='film-kicker';
+      const quote=document.createElement('blockquote');quote.textContent=slide.message;quote.tabIndex=0;
+      const name=document.createElement('p');name.className='film-author';name.textContent=`— ${slide.name}`;
+      copy.append(title,quote,name);
+    }else{
+      copy.append(title);
+      const caption=document.createElement('p');caption.className='film-author';
+      caption.textContent=`${$('hero-name').textContent} / ${$('hero-age').textContent.replace('.','')} ${slide.kind==='intro'?'YEARS':'♡'}`;
+      copy.append(caption);
+    }
+    stage.append(copy);
+    if(slide.kind==='end'){
+      playing=false;
+      if(!reducedMotion){const confetti=document.createElement('div');confetti.className='film-confetti';confetti.setAttribute('aria-hidden','true');for(let n=0;n<18;n++)confetti.append(document.createElement('i'));stage.append(confetti);}
+    }
+    controls();schedule();
+  }
+  async function fetchPage(run){
+    const data=await api(`/api/entries${cursor?`?before=${cursor}`:''}`);
+    if(run!==generation||!film.open)return;
+    slides.splice(slides.length-1,0,...data.entries.map(entry=>({...entry,kind:'memory'})));
+    cursor=data.next;
+  }
+  async function move(direction){
+    if(fetching)return;
+    if(direction>0&&index===slides.length-2&&cursor){
+      fetching=true;stopTimer();controls();$('film-feedback').textContent='Opening more memories…';
+      const run=generation;
+      try{await fetchPage(run);if(run!==generation||!film.open)return;$('film-feedback').textContent='';}
+      catch{if(run===generation){playing=false;$('film-feedback').textContent='Could not load the next memories. Press Next to try again.';}return;}
+      finally{if(run===generation){fetching=false;controls();}}
+    }
+    if(!film.open)return;
+    index=Math.max(0,Math.min(slides.length-1,index+direction));render();
+  }
+  $('film-open').onclick=async()=>{
+    generation++;const run=generation;stopTimer();index=0;cursor=null;fetching=true;playing=!reducedMotion;
+    slides=[{kind:'intro'},{kind:'end'}];film.showModal();document.body.classList.add('film-open');
+    $('film-feedback').textContent='Opening the memories…';render();
+    try{await fetchPage(run);if(run!==generation||!film.open)return;$('film-feedback').textContent='';}
+    catch{if(run===generation){playing=false;$('film-feedback').textContent='Memories could not load. Close and reopen to try again.';}}
+    finally{if(run===generation){fetching=false;controls();schedule();}}
+  };
+  $('film-prev').onclick=()=>move(-1);$('film-next').onclick=()=>move(1);
+  $('film-play').onclick=()=>{if(index===slides.length-1){index=0;playing=true;render();}else{playing=!playing;controls();schedule();}};
+  film.addEventListener('keydown',event=>{if(event.key==='ArrowRight'){event.preventDefault();move(1);}if(event.key==='ArrowLeft'){event.preventDefault();move(-1);}});
+  film.addEventListener('close',()=>{generation++;stopTimer();playing=false;fetching=false;stage.replaceChildren();document.body.classList.remove('film-open');$('film-open').focus();});
+  document.addEventListener('visibilitychange',schedule);
+}
