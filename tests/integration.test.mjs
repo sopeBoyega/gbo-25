@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
-import { createHmac, randomUUID } from 'node:crypto';
+import { createHmac, randomUUID, randomBytes } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { createApp } from '../server.mjs';
 const sharp=createRequire(import.meta.url)('sharp');
@@ -58,7 +58,7 @@ test('rejects invalid uploads, missing consent, stale tokens and cross-origin wr
     assert.equal((await f.request('/api/entries','POST',entry({photo:Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>').toString('base64')}))).status,400);
     assert.equal((await f.request('/api/entries','POST',entry({photo:Buffer.from('not an image').toString('base64')}))).status,400);
     assert.equal((await f.request('/api/entries','POST',entry({message:'x'.repeat(1201)}))).status,400);
-    assert.equal((await f.request('/api/entries','POST',entry({photo:Buffer.alloc(4*1024*1024+1).toString('base64')}))).status,413);
+    assert.equal((await f.request('/api/entries','POST',entry({photo:Buffer.alloc(20*1024*1024+1).toString('base64')}))).status,413);
     assert.equal((await f.request('/.env')).status,404);assert.equal((await f.request('/schema.sql')).status,404);
     const home=await f.request('/');assert.equal(home.status,200);assert.match(home.headers.get('content-security-policy'),/frame-ancestors 'none'/);
   }finally{await f.close();}
@@ -76,5 +76,26 @@ test('login attempts are limited and forged sessions are denied',async()=>{
     for(let i=0;i<5;i++)assert.equal((await f.request('/api/admin/login','POST',{password:'incorrect'})).status,401);
     assert.equal((await f.request('/api/admin/login','POST',{password})).status,429);
     assert.equal((await f.request('/api/admin/entries','GET',undefined,'gbo_session='+'a'.repeat(64))).status,401);
+  }finally{await f.close();}
+});
+
+test('accepts a photo above the old 4 MB limit and a 48 MP iPhone-sized photo, then stores compact JPEGs',async()=>{
+  const f=await fixture();try{
+    const largeJpeg=await sharp(randomBytes(2700*2700*3),{raw:{width:2700,height:2700,channels:3}}).jpeg({quality:95}).toBuffer();
+    assert.ok(largeJpeg.length>4*1024*1024);
+    assert.ok(largeJpeg.length<20*1024*1024);
+    const iphoneJpeg=await sharp({create:{width:8064,height:6048,channels:3,background:'#ed292d'}}).jpeg().toBuffer();
+    const cookie=await signIn(f);
+    for(const photo of [largeJpeg,iphoneJpeg]){
+      const r=await f.request('/api/entries','POST',entry({photo:photo.toString('base64')}));
+      assert.equal(r.status,202,await r.clone().text());
+      const {id}=await r.json();
+      const stored=await f.request(`/api/admin/photos/${id}`,'GET',undefined,cookie);
+      assert.equal(stored.status,200);
+      const bytes=Buffer.from(await stored.arrayBuffer());
+      const meta=await sharp(bytes).metadata();
+      assert.ok(meta.width<=1600&&meta.height<=1600);
+      assert.ok(bytes.length<photo.length);
+    }
   }finally{await f.close();}
 });

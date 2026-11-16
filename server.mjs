@@ -55,9 +55,10 @@ export function createApp(options = {}) {
     const token = /(?:^|;\s*)gbo_session=([a-f0-9]{64})(?:;|$)/.exec(req.headers.cookie || '')?.[1];
     return token && (await db.prepare('SELECT token FROM sessions WHERE token=? AND expires>?').get(hash(token), Date.now()));
   }
-  async function body(req, max = 6000000) {
+  // 20 MiB files expand to about 28 MiB when base64-encoded in JSON.
+  async function body(req, max = 29 * 1024 * 1024) {
     if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] || '')) fail(415,'Please send JSON.');
-    if (Number(req.headers['content-length']) > max) fail(413,'This upload is too large. Choose a photo under 4 MB.');
+    if (Number(req.headers['content-length']) > max) fail(413,'This upload is too large. Choose a photo up to 20 MB.');
     const chunks = []; let size = 0;
     for await (const chunk of req) {
       size += chunk.length;
@@ -70,9 +71,9 @@ export function createApp(options = {}) {
   async function imageData(value) {
     if (typeof value !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(value)) fail(400,'Choose a valid JPEG, PNG or WebP photo.');
     const input = Buffer.from(value, 'base64');
-    if (!input.length || input.length > 4 * 1024 * 1024) fail(413,'Choose a photo under 4 MB.');
+    if (!input.length || input.length > 20 * 1024 * 1024) fail(413,'Choose a photo up to 20 MB.');
     try {
-      const decoder = sharp(input, { limitInputPixels: 24000000, failOn: 'warning', animated: false });
+      const decoder = sharp(input, { limitInputPixels: 50000000, failOn: 'warning', animated: false });
       const meta = await decoder.metadata();
       if (!['jpeg','png','webp'].includes(meta.format) || (meta.pages || 1) > 1) fail(400,'Only still JPEG, PNG and WebP photos are supported.');
       // Decode and re-encode; never retain original bytes, filename, GPS or EXIF.
@@ -118,7 +119,9 @@ export function createApp(options = {}) {
       if (path === '/api/entries' && req.method === 'POST') {
         await rate(`submit:${visitor}`, 8, 3600000);
         await rate('submit:global', 300, 86400000);
-        if (activeUploads >= 3) fail(503,'The upload queue is busy. Try again in a moment.');
+        // One large decode at a time keeps full-resolution photos within the
+        // 512 MB memory budget of Render Free.
+        if (activeUploads >= 1) fail(503,'Another photo is uploading. Please try again in a moment.');
         activeUploads++;
         try {
           const input = await body(req);
@@ -194,7 +197,7 @@ export function createApp(options = {}) {
       } else res.end();
     }
   });
-  server.requestTimeout=30000;
+  server.requestTimeout=120000;
   server.headersTimeout=15000;
   server.maxHeadersCount=40;
   server.on('close',()=>db.close());

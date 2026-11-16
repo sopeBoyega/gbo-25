@@ -32,7 +32,7 @@ Render Free can sleep after inactivity, so the first visitor may wait for it to 
 
 Photos are stored durably inside Postgres as binary data. This avoids needing a separate bucket for this small event. The app caps stored image data at 256 MiB to leave room within the free database allowance, and caps entries at 3,000. Monitor project usage in Supabase.
 
-Uploads accept still JPEG/PNG/WebP up to 4 MB and 24 megapixels. The server decodes, resizes and re-encodes photos as JPEG, stripping EXIF/GPS metadata. Every submission waits for host approval. Pending photos are accessible only to the host; public photo routes recheck approval. The host can unpublish or delete entries.
+Uploads accept still JPEG/PNG/WebP up to 20 MB and 50 megapixels, covering 48 MP iPhone JPEGs. HEIC/HEIF originals must be exported or shared as JPEG first. The server decodes, resizes and re-encodes photos as JPEG, stripping EXIF/GPS metadata. One large upload is processed at a time to fit Render Free memory, with up to two minutes to receive the request. Every submission waits for host approval. Pending photos are accessible only to the host; public photo routes recheck approval. The host can unpublish or delete entries.
 
 Other safeguards include exact-origin write checks, escaped text rendering, restricted security headers, expiring HttpOnly host sessions, signed form tokens, rate limits stored in Supabase and an atomic database capacity check. The database function accepts only the application's fixed query list and is executable only with the server role.
 

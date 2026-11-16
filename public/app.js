@@ -32,7 +32,17 @@ document.querySelectorAll('[data-filter]').forEach(button=>button.onclick=()=>{f
 $('load-more').onclick=()=>loadEntries(true);
 $('message').oninput=()=>{$('char-count').textContent=`${$('message').value.length} / 1200`;};
 function clearPhoto(){selectedFile=null;$('photo').value='';if(previewUrl)URL.revokeObjectURL(previewUrl);previewUrl=null;$('photo-preview').hidden=true;$('preview-img').removeAttribute('src');}
-function choosePhoto(file){clearPhoto();if(!file)return;if(!['image/jpeg','image/png','image/webp'].includes(file.type)){status('Choose a JPEG, PNG or WebP photo.','error');return;}if(file.size>4*1024*1024){status('That photo is too large. Please choose one under 4 MB.','error');return;}selectedFile=file;previewUrl=URL.createObjectURL(file);$('preview-img').src=previewUrl;$('photo-preview').hidden=false;status('');}
+function choosePhoto(file){
+  clearPhoto();if(!file)return;
+  if(/\.(heic|heif)$/i.test(file.name)||['image/heic','image/heif'].includes(file.type)){
+    status('This is an iPhone HEIC original. Please export or share it as a JPEG, then choose that version.','error');return;
+  }
+  const validType=['image/jpeg','image/png','image/webp'].includes(file.type);
+  const validExtension=!file.type&&/\.(jpe?g|png|webp)$/i.test(file.name);
+  if(!validType&&!validExtension){status('Choose a JPEG, PNG or WebP photo.','error');return;}
+  if(file.size>20*1024*1024){status('That photo is too large. Please choose one up to 20 MB.','error');return;}
+  selectedFile=file;previewUrl=URL.createObjectURL(file);$('preview-img').src=previewUrl;$('photo-preview').hidden=false;status('');
+}
 $('photo').onchange=e=>choosePhoto(e.target.files[0]);$('remove-photo').onclick=clearPhoto;
 const zone=$('drop-zone');zone.ondragover=e=>{e.preventDefault();zone.classList.add('dragging');};zone.ondragleave=()=>zone.classList.remove('dragging');zone.ondrop=e=>{e.preventDefault();zone.classList.remove('dragging');choosePhoto(e.dataTransfer.files[0]);};
 async function challenge(){token=(await api('/api/challenge')).token;}
